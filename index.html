@@ -94,6 +94,11 @@ nav .seg.recipes .pill{transform:translateX(calc(200% + 16px))}
 .source{display:inline-block;color:var(--mint);font-size:14px;margin:-8px 0 18px;text-decoration:none}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--mint);border-right-color:transparent;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-1px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
+.who{background:var(--card);border-radius:22px;padding:18px;margin-bottom:18px;animation:in .45s var(--ease)}
+.who b{display:block;font-weight:500;font-size:19px;margin-bottom:4px}
+.who p{margin:0 0 14px;color:var(--mute);font-size:14px}
+.writer{font-size:13px;color:var(--dim);margin:-2px 2px 12px}
+.writer button{border:0;background:none;color:var(--mint);padding:0;cursor:pointer;font-size:13px}
 .danger{width:100%;border:1px solid var(--line);background:none;border-radius:16px;padding:14px;color:var(--alert);cursor:pointer;margin-top:4px}
 .setup{background:var(--card);border-radius:22px;padding:22px;line-height:1.55;color:var(--mute)}
 .setup b{color:var(--fg);font-weight:500}
@@ -217,10 +222,12 @@ function render() {
     setStatus("", "Não conectado");
     return;
   }
+  const askName = !store.get("nome", "") ? `<form class="who" id="whoForm" novalidate><b>Quem é você?</b><p>Seu nome aparece nos recados que você deixar no mural.</p>
+      <div class="add"><input id="whoName" placeholder="Ana" autocomplete="given-name" aria-label="Seu nome"><button aria-label="Salvar nome">✓</button></div></form>` : "";
   if (S.tab === "list") {
     const items = live("shopping_items");
     const done = items.filter(i => i.done).length;
-    main.innerHTML = `
+    main.innerHTML = askName + `
       <form class="add" id="addItem" novalidate><input id="itemName" placeholder="Leite integral" autocomplete="off" aria-label="Novo item"><button aria-label="Adicionar item">+</button></form>
       <div class="err-text" id="itemErr"></div>
       ${items.length ? CATS.map(c => {
@@ -230,14 +237,15 @@ function render() {
       }).join("") : `<div class="empty">A lista está vazia. Adicione o primeiro item acima.</div>`}
       ${done ? `<button class="ghost" id="clear">Limpar comprados (${done})</button>` : ""}`;
   } else if (S.tab === "recipes") {
-    main.innerHTML = renderRecipes();
+    main.innerHTML = (S.view ? "" : askName) + renderRecipes();
   } else {
     const rem = live("reminders");
     const notes = live("notes").sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-    main.innerHTML = `
+    main.innerHTML = askName + `
       ${rem.length ? `<div class="label">Lembretes</div><div class="card">${rem.map(r =>
         `<div class="row ${r.done ? "done" : ""}" data-rem="${r.id}">${check}<span class="tx">${esc(r.body)}</span><span class="meta">${esc(r.at_label)}</span></div>`).join("")}</div>` : ""}
       <div class="label">Recados da família</div>
+      ${store.get("nome", "") ? `<div class="writer">Escrevendo como ${esc(store.get("nome", ""))} · <button type="button" data-change-name>trocar</button></div>` : ""}
       <form class="add" id="addNote" novalidate><input id="noteText" placeholder="Saí para o mercado, volto às 18h" autocomplete="off" aria-label="Novo recado"><button aria-label="Publicar recado">+</button></form>
       <div class="err-text" id="noteErr"></div>
       <div class="notes">${notes.map(n => `<div class="note" style="background:#${(n.color & 0xFFFFFF).toString(16).padStart(6, "0")};--r:${n.tilt}deg">${esc(n.body)}<small>${esc(n.author)}</small></div>`).join("")}</div>`;
@@ -386,6 +394,7 @@ document.addEventListener("click", e => {
   const tab = e.target.closest("[data-tab]");
   if (tab) { S.tab = tab.dataset.tab; S.view = null; store.set("tab", S.tab); render(); return; }
   if (e.target.closest("[data-new-recipe]")) return openRecipes({ mode: "edit", id: null });
+  if (e.target.closest("[data-change-name]")) { store.set("nome", ""); render(); document.getElementById("whoName")?.focus(); return; }
   if (e.target.closest("[data-remove-photo]")) return keepForm(() => { S.photo = null; });
   const retry = e.target.closest("[data-retry-import]");
   if (retry) { const r = S.rows.recipes[retry.dataset.retryImport]; change("recipes", { ...r, import_status: "pending", import_error: null }); return openRecipes({ mode: "view", id: r.id }); }
@@ -409,6 +418,11 @@ document.addEventListener("click", e => {
 document.addEventListener("submit", e => {
   e.preventDefault();
   if (e.target.id === "recipeForm") return saveRecipe();
+  if (e.target.id === "whoForm") {
+    const input = document.getElementById("whoName"), name = input.value.trim();
+    if (!name) { input.classList.add("err"); return; }
+    store.set("nome", name.charAt(0).toUpperCase() + name.slice(1).slice(0, 29)); render(); return;
+  }
   if (e.target.id === "importForm") {
     const input = document.getElementById("importUrl");
     if (!requestImport(input.value)) { input.classList.add("err"); document.getElementById("importErr").textContent = "Cole um link que comece com https://"; }
@@ -425,7 +439,7 @@ document.addEventListener("submit", e => {
   if (e.target.id === "addNote") {
     const input = document.getElementById("noteText"), body = input.value.trim();
     if (!body) { input.classList.add("err"); document.getElementById("noteErr").textContent = "Escreva o recado"; return; }
-    const who = store.get("nome", "Celular");
+    const who = store.get("nome", "") || "Celular";
     change("notes", { id: uuid(), body, author: who, color: COLORS[live("notes").length % COLORS.length], tilt: +(Math.random() * 3 - 1.5).toFixed(1), deleted: false });
   }
 });
