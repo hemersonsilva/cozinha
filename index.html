@@ -98,6 +98,11 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ? 
 const fromHash = new URLSearchParams(location.hash.slice(1)).get("casa");
 if (fromHash) { store.set("casa", fromHash); history.replaceState(null, "", location.pathname + location.search); }
 const CODE = store.get("casa", null);
+// Scanning the QR while this page is already open only changes the fragment: pick it up then too.
+addEventListener("hashchange", () => {
+  const c = new URLSearchParams(location.hash.slice(1)).get("casa");
+  if (c) { store.set("casa", c); location.replace(location.pathname + location.search); }
+});
 
 const S = {
   tab: store.get("tab", "list"),
