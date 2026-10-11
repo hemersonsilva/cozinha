@@ -63,8 +63,15 @@ nav button.on{color:var(--mint-ink)}
 nav .pill{position:absolute;top:0;bottom:0;left:0;width:calc((100% - 16px) / 3);border-radius:16px;background:var(--mint);transition:transform .45s var(--ease)}
 nav .seg.mural .pill{transform:translateX(calc(100% + 8px))}
 nav .seg.recipes .pill{transform:translateX(calc(200% + 16px))}
-.rcard{display:block;width:100%;text-align:left;background:var(--card);border:0;border-radius:20px;padding:16px 18px;margin-bottom:10px;cursor:pointer;animation:in .45s var(--ease)}
+.rcard{display:flex;gap:14px;align-items:center;width:100%;text-align:left;background:var(--card);border:0;border-radius:20px;padding:16px 18px;margin-bottom:10px;cursor:pointer;animation:in .45s var(--ease)}
 .rcard b{display:block;font-weight:500;font-size:19px}
+.rcard .txt{min-width:0;flex:1}
+.thumb{width:64px;height:64px;border-radius:14px;object-fit:cover;flex-shrink:0;background:var(--card2)}
+.hero{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:22px;margin:0 0 14px;background:var(--card2);display:block}
+.photo-field{display:flex;gap:12px;align-items:center;margin-bottom:14px}
+.photo-field img{width:96px;height:96px;border-radius:16px;object-fit:cover}
+.photo-field label,.photo-field button{border:1px solid var(--line);background:none;border-radius:14px;padding:12px 14px;color:var(--fg);cursor:pointer;font-size:15px}
+.photo-field input{display:none}
 .rcard span{color:var(--mute);font-size:14px}
 .primary{width:100%;border:0;border-radius:18px;background:var(--mint);color:var(--mint-ink);font-weight:500;padding:16px;cursor:pointer;margin-bottom:16px}
 .back{border:0;background:none;color:var(--mint);padding:0;margin-bottom:12px;cursor:pointer;font-weight:500}
@@ -247,7 +254,7 @@ function renderRecipes() {
     return `<form class="add import" id="importForm" novalidate><input id="importUrl" type="url" inputmode="url" placeholder="Cole o link de uma receita" autocomplete="off" aria-label="Link da receita"><button aria-label="Importar receita">↓</button></form>
       <div class="err-text" id="importErr"></div>
       <button class="primary" data-new-recipe>Escrever uma receita</button>` + (list.length
-      ? list.map(r => `<button class="rcard" data-recipe="${r.id}"><b>${esc(r.title)}${statusChip(r)}</b><span>${recipeMeta(r)}</span></button>`).join("")
+      ? list.map(r => `<button class="rcard" data-recipe="${r.id}">${r.image ? `<img class="thumb" src="${esc(r.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}<span class="txt"><b>${esc(r.title)}${statusChip(r)}</b><span>${recipeMeta(r)}</span></span></button>`).join("")
       : `<div class="empty">Importe receitas de sites como TudoGostoso e Panelinha colando o link, ou escreva as receitas da família. Elas aparecem no painel da cozinha, com o passo a passo e os timers.</div>`);
   }
   const r = v.id ? S.rows.recipes[v.id] : null;
@@ -264,6 +271,7 @@ function renderRecipes() {
   }
   if (v.mode === "view" && r) {
     return `<button class="back" data-recipes-back>← Receitas</button>
+      ${r.image ? `<img class="hero" src="${esc(r.image)}" alt="Foto de ${esc(r.title)}" referrerpolicy="no-referrer">` : ""}
       <div class="rtitle">${esc(r.title)}</div>
       <div class="rmeta">${recipeMeta(r)}</div>
       ${r.source_url ? `<a class="source" href="${esc(r.source_url)}" target="_blank" rel="noopener">Receita original no ${esc(r.source_name || "site")} ↗</a>` : ""}
@@ -279,6 +287,12 @@ function renderRecipes() {
         <label class="field"><span>Tempo (min)</span><input id="rMinutes" type="number" inputmode="numeric" min="1" value="${f.minutes}"></label>
         <label class="field"><span>Porções</span><input id="rServings" type="number" inputmode="numeric" min="1" value="${f.servings}"></label>
       </div>
+      <div class="photo-field">
+        ${formPhoto() ? `<img src="${esc(formPhoto())}" alt="Foto da receita">` : ""}
+        <label>${formPhoto() ? "Trocar foto" : "Adicionar foto"}<input type="file" id="rPhoto" accept="image/*"></label>
+        ${formPhoto() ? `<button type="button" data-remove-photo>Remover</button>` : ""}
+      </div>
+      <div class="err-text" id="photoErr"></div>
       <label class="field"><span>Quem ensinou</span><input id="rAuthor" value="${esc(f.author)}" placeholder="Vó Maria" autocomplete="off"></label>
       <label class="field"><span>Ingredientes, um por linha</span><textarea id="rIngredients" placeholder="3 ovos&#10;2 xícaras (chá) de açúcar&#10;1 xícara de óleo&#10;Sal a gosto">${esc((f.ingredients || []).join("\n"))}</textarea></label>
       <div class="hint">Escreva a quantidade no começo ("300 g de…", "1/2 xícara de…") para o painel ajustar as porções.</div>
@@ -290,7 +304,40 @@ function renderRecipes() {
     ${r ? `<button class="danger" data-delete-recipe="${r.id}">Apagar receita</button>` : ""}`;
 }
 
-function openRecipes(view) { S.view = view; render(); scrollTo(0, 0); }
+function openRecipes(view) { S.view = view; S.photo = undefined; render(); scrollTo(0, 0); }
+
+// Photo being edited: undefined = keep the saved one, null = removed, string = new data URL.
+function formPhoto() {
+  if (S.photo !== undefined) return S.photo;
+  return S.view?.id ? S.rows.recipes[S.view.id]?.image || null : null;
+}
+
+/** Shrinks a photo to 800 px on the phone (~60-100 KB) before it is stored with the recipe. */
+function shrinkPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      let q = 0.78, out = c.toDataURL("image/jpeg", q);
+      while (out.length > 550000 && q > 0.4) { q -= 0.12; out = c.toDataURL("image/jpeg", q); }
+      out.length > 550000 ? reject(new Error("grande")) : resolve(out);
+    };
+    img.onerror = () => reject(new Error("formato"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+/** Re-render the form without losing what was typed. */
+function keepForm(fn) {
+  const ids = ["rTitle", "rMinutes", "rServings", "rAuthor", "rIngredients", "rSteps"];
+  const vals = Object.fromEntries(ids.map(id => [id, document.getElementById(id)?.value]));
+  fn(); render();
+  ids.forEach(id => { const el = document.getElementById(id); if (el && vals[id] != null) el.value = vals[id]; });
+}
 
 function statusChip(r) {
   if (r.import_status === "pending") return `<span class="status-chip wait">importando</span>`;
@@ -326,8 +373,9 @@ function saveRecipe() {
   if (!ingredients.length && !steps.length) { err.textContent = "Escreva os ingredientes ou o modo de preparo"; return; }
   const author = val("rAuthor").trim() || "Família";
   const id = S.view?.id || uuid();
+  const before = S.view?.id ? S.rows.recipes[S.view.id] : {};
   change("recipes", {
-    id, title, author, ingredients, steps, deleted: false,
+    ...before, id, title, author, ingredients, steps, deleted: false, image: formPhoto(),
     minutes: Math.max(1, parseInt(val("rMinutes"), 10) || 30),
     servings: Math.max(1, parseInt(val("rServings"), 10) || 4),
   });
@@ -338,6 +386,7 @@ document.addEventListener("click", e => {
   const tab = e.target.closest("[data-tab]");
   if (tab) { S.tab = tab.dataset.tab; S.view = null; store.set("tab", S.tab); render(); return; }
   if (e.target.closest("[data-new-recipe]")) return openRecipes({ mode: "edit", id: null });
+  if (e.target.closest("[data-remove-photo]")) return keepForm(() => { S.photo = null; });
   const retry = e.target.closest("[data-retry-import]");
   if (retry) { const r = S.rows.recipes[retry.dataset.retryImport]; change("recipes", { ...r, import_status: "pending", import_error: null }); return openRecipes({ mode: "view", id: r.id }); }
   if (e.target.closest("[data-recipes-back]")) return openRecipes(S.view?.mode === "edit" && S.view.id ? { mode: "view", id: S.view.id } : null);
@@ -378,6 +427,15 @@ document.addEventListener("submit", e => {
     if (!body) { input.classList.add("err"); document.getElementById("noteErr").textContent = "Escreva o recado"; return; }
     const who = store.get("nome", "Celular");
     change("notes", { id: uuid(), body, author: who, color: COLORS[live("notes").length % COLORS.length], tilt: +(Math.random() * 3 - 1.5).toFixed(1), deleted: false });
+  }
+});
+document.addEventListener("change", async e => {
+  if (e.target.id !== "rPhoto" || !e.target.files?.[0]) return;
+  try {
+    const data = await shrinkPhoto(e.target.files[0]);
+    keepForm(() => { S.photo = data; });
+  } catch (err) {
+    document.getElementById("photoErr").textContent = err.message === "grande" ? "Essa foto ficou grande demais. Tente outra." : "Não foi possível abrir essa imagem.";
   }
 });
 document.addEventListener("input", e => {
