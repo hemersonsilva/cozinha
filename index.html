@@ -7,6 +7,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Cozinha</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@300&family=Onest:wght@400;500&display=swap" rel="stylesheet">
@@ -77,6 +80,13 @@ nav .seg.recipes .pill{transform:translateX(calc(200% + 16px))}
 .field .err{border-color:var(--alert)}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .hint{font-size:13px;color:var(--dim);margin:-6px 2px 14px}
+.import{margin-bottom:6px}
+.status-chip{display:inline-block;font-size:12px;padding:3px 9px;border-radius:999px;margin-left:6px;vertical-align:2px}
+.status-chip.wait{background:#1f2a24;color:var(--mint)}
+.status-chip.fail{background:#2a1714;color:var(--alert)}
+.source{display:inline-block;color:var(--mint);font-size:14px;margin:-8px 0 18px;text-decoration:none}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--mint);border-right-color:transparent;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-1px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
 .danger{width:100%;border:1px solid var(--line);background:none;border-radius:16px;padding:14px;color:var(--alert);cursor:pointer;margin-top:4px}
 .setup{background:var(--card);border-radius:22px;padding:22px;line-height:1.55;color:var(--mute)}
 .setup b{color:var(--fg);font-weight:500}
@@ -234,15 +244,29 @@ function renderRecipes() {
   const v = S.view;
   if (!v) {
     const list = live("recipes").sort((a, b) => a.title.localeCompare(b.title, "pt-BR"));
-    return `<button class="primary" data-new-recipe>Nova receita</button>` + (list.length
-      ? list.map(r => `<button class="rcard" data-recipe="${r.id}"><b>${esc(r.title)}</b><span>${r.minutes} min · ${r.servings} porções · de ${esc(r.author)}</span></button>`).join("")
-      : `<div class="empty">Cadastre as receitas da família. Elas aparecem no painel da cozinha, com o passo a passo e os timers.</div>`);
+    return `<form class="add import" id="importForm" novalidate><input id="importUrl" type="url" inputmode="url" placeholder="Cole o link de uma receita" autocomplete="off" aria-label="Link da receita"><button aria-label="Importar receita">↓</button></form>
+      <div class="err-text" id="importErr"></div>
+      <button class="primary" data-new-recipe>Escrever uma receita</button>` + (list.length
+      ? list.map(r => `<button class="rcard" data-recipe="${r.id}"><b>${esc(r.title)}${statusChip(r)}</b><span>${recipeMeta(r)}</span></button>`).join("")
+      : `<div class="empty">Importe receitas de sites como TudoGostoso e Panelinha colando o link, ou escreva as receitas da família. Elas aparecem no painel da cozinha, com o passo a passo e os timers.</div>`);
   }
   const r = v.id ? S.rows.recipes[v.id] : null;
+  if (v.mode === "view" && r && r.import_status === "pending") {
+    return `<button class="back" data-recipes-back>← Receitas</button>
+      <div class="setup"><span class="spin"></span>O painel da cozinha está buscando esta receita. Ela aparece aqui em alguns segundos, desde que o painel esteja ligado.<br><br><span style="overflow-wrap:anywhere">${esc(r.source_url)}</span></div>
+      <button class="danger" data-delete-recipe="${r.id}">Cancelar importação</button>`;
+  }
+  if (v.mode === "view" && r && r.import_status === "failed") {
+    return `<button class="back" data-recipes-back>← Receitas</button>
+      <div class="setup"><b>Não deu para importar.</b> ${esc(r.import_error || "")}<br><br><span style="overflow-wrap:anywhere">${esc(r.source_url)}</span></div>
+      <button class="primary" style="margin-top:16px" data-retry-import="${r.id}">Tentar de novo</button>
+      <button class="danger" data-delete-recipe="${r.id}">Apagar</button>`;
+  }
   if (v.mode === "view" && r) {
     return `<button class="back" data-recipes-back>← Receitas</button>
       <div class="rtitle">${esc(r.title)}</div>
-      <div class="rmeta">${r.minutes} min · ${r.servings} porções · de ${esc(r.author)}</div>
+      <div class="rmeta">${recipeMeta(r)}</div>
+      ${r.source_url ? `<a class="source" href="${esc(r.source_url)}" target="_blank" rel="noopener">Receita original no ${esc(r.source_name || "site")} ↗</a>` : ""}
       <div class="label">Ingredientes</div><div class="card"><ul class="ul">${(r.ingredients || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul></div>
       <div class="label">Modo de preparo</div><ol class="ol">${(r.steps || []).map(i => `<li>${esc(i)}</li>`).join("")}</ol>
       <button class="ghost" data-edit-recipe="${r.id}">Editar receita</button>`;
@@ -268,6 +292,31 @@ function renderRecipes() {
 
 function openRecipes(view) { S.view = view; render(); scrollTo(0, 0); }
 
+function statusChip(r) {
+  if (r.import_status === "pending") return `<span class="status-chip wait">importando</span>`;
+  if (r.import_status === "failed") return `<span class="status-chip fail">não importada</span>`;
+  return "";
+}
+function recipeMeta(r) {
+  if (r.import_status === "pending") return "O painel está buscando a receita…";
+  if (r.import_status === "failed") return esc(r.import_error || "Não foi possível importar");
+  return `${r.minutes} min · ${r.servings} porções · ${r.source_name ? "do " + esc(r.source_name) : "de " + esc(r.author)}`;
+}
+
+/** A link pasted or shared from another app; the panel does the fetching (browsers block it here). */
+function requestImport(raw) {
+  const m = String(raw || "").match(/https?:\/\/[^\s"'<>]+/);
+  if (!m) return false;
+  const url = m[0].replace(/[).,;]+$/, "");
+  const existing = live("recipes").find(r => r.source_url === url);
+  if (existing) { S.tab = "recipes"; openRecipes({ mode: "view", id: existing.id }); return true; }
+  const host = new URL(url).hostname.replace(/^www\./, "");
+  change("recipes", { id: uuid(), title: host, minutes: 30, servings: 4, author: host, ingredients: [], steps: [],
+    source_url: url, source_name: null, import_status: "pending", import_error: null, deleted: false });
+  S.tab = "recipes"; store.set("tab", "recipes"); openRecipes(null);
+  return true;
+}
+
 function saveRecipe() {
   const val = id => document.getElementById(id).value;
   const lines = id => val(id).split("\n").map(l => l.trim()).filter(Boolean);
@@ -289,6 +338,8 @@ document.addEventListener("click", e => {
   const tab = e.target.closest("[data-tab]");
   if (tab) { S.tab = tab.dataset.tab; S.view = null; store.set("tab", S.tab); render(); return; }
   if (e.target.closest("[data-new-recipe]")) return openRecipes({ mode: "edit", id: null });
+  const retry = e.target.closest("[data-retry-import]");
+  if (retry) { const r = S.rows.recipes[retry.dataset.retryImport]; change("recipes", { ...r, import_status: "pending", import_error: null }); return openRecipes({ mode: "view", id: r.id }); }
   if (e.target.closest("[data-recipes-back]")) return openRecipes(S.view?.mode === "edit" && S.view.id ? { mode: "view", id: S.view.id } : null);
   const rc = e.target.closest("[data-recipe]");
   if (rc) return openRecipes({ mode: "view", id: rc.dataset.recipe });
@@ -309,6 +360,11 @@ document.addEventListener("click", e => {
 document.addEventListener("submit", e => {
   e.preventDefault();
   if (e.target.id === "recipeForm") return saveRecipe();
+  if (e.target.id === "importForm") {
+    const input = document.getElementById("importUrl");
+    if (!requestImport(input.value)) { input.classList.add("err"); document.getElementById("importErr").textContent = "Cole um link que comece com https://"; }
+    return;
+  }
   if (e.target.id === "addItem") {
     const input = document.getElementById("itemName"), name = input.value.trim();
     if (!name) { input.classList.add("err"); document.getElementById("itemErr").textContent = "Digite o nome do item"; return; }
@@ -331,6 +387,14 @@ document.addEventListener("input", e => {
   const re = document.getElementById("recipeErr"); if (re) re.textContent = "";
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
+
+// Android "Compartilhar → Cozinha" opens ?share&url=…&text=… (see manifest.webmanifest).
+const shared = new URLSearchParams(location.search);
+if (shared.has("share")) {
+  history.replaceState(null, "", location.pathname);
+  if (CODE) requestImport(shared.get("url") || shared.get("text") || "");
+}
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
 render();
 sync();
