@@ -105,6 +105,17 @@ nav .seg.recipes .pill{transform:translateX(calc(200% + 16px))}
 .rec span{color:var(--mute)}
 .rec.fail span{color:var(--alert)}
 .rec button{border:0;background:none;color:var(--mint);cursor:pointer;padding:0;font-size:14px}
+.scanner{position:fixed;inset:0;z-index:50;background:#000;display:flex;flex-direction:column}
+.scanner video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.scanner .mask{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.scanner .frame{width:72vmin;height:72vmin;border-radius:24px;box-shadow:0 0 0 200vmax rgba(0,0,0,.55);border:3px solid var(--mint);position:relative}
+.scanner .frame::after{content:'';position:absolute;left:8%;right:8%;height:2px;background:var(--alert);top:10%;animation:laser 1.4s ease-in-out infinite alternate}
+@keyframes laser{to{top:90%}}
+.scanner .msg{position:absolute;left:18px;right:18px;top:calc(env(safe-area-inset-top,0px) + 22px);text-align:center;color:#fff;font-size:17px;line-height:1.4;text-shadow:0 1px 3px #000}
+.scanner .bar{position:absolute;left:18px;right:18px;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);display:flex;gap:10px}
+.scanner .bar button,.scanner .bar label{flex:1;border:0;border-radius:16px;padding:15px;font-weight:500;cursor:pointer;text-align:center;background:rgba(255,255,255,.14);color:#fff;backdrop-filter:blur(6px)}
+.scanner .bar input{display:none}
+.cupom .scan{border:0;font:inherit}
 .who{background:var(--card);border-radius:22px;padding:18px;margin-bottom:18px;animation:in .45s var(--ease)}
 .who b{display:block;font-weight:500;font-size:19px;margin-bottom:4px}
 .who p{margin:0 0 14px;color:var(--mute);font-size:14px}
@@ -237,8 +248,8 @@ function cupomCard() {
   const monthName = now.toLocaleDateString("pt-BR", { month: "long" });
   return `<div class="cupom">
     <div class="head"><b>Cupom fiscal</b>${month.length ? `<span class="month">${monthName}: ${brl(month.reduce((t, r) => t + Number(r.total || 0), 0))}</span>` : ""}</div>
-    <label class="scan">Ler cupom fiscal<input type="file" id="cupomFoto" accept="image/*" capture="environment"></label>
-    <div class="or">Fotografe o QR code do rodapé do cupom. Ou cole o link que a câmera do celular abriu:</div>
+    <button class="scan" data-scan-cupom>Ler cupom fiscal</button>
+    <div class="or">Aponte para o QR code do rodapé do cupom. Ou cole o link que a câmera do celular abriu:</div>
     <form class="add" id="cupomLink" novalidate><input id="cupomUrl" type="url" inputmode="url" placeholder="https://www.sefaz.pb.gov.br/nfce?p=…" autocomplete="off" aria-label="Link do cupom"><button aria-label="Enviar cupom">↓</button></form>
     <div class="err-text" id="cupomErr"></div>
     ${recent.map(r => r.import_status === "pending"
@@ -265,32 +276,116 @@ function requestReceipt(raw) {
 
 function cupomMessage(msg) { const e = document.getElementById("cupomErr"); if (e) e.textContent = msg; }
 
-let jsQRReady = null;
+// QR decoding: ZXing (C++ compiled to WebAssembly) copes with blur and curved paper much better
+// than jsQR; jsQR stays as a fallback if the WebAssembly file cannot be loaded.
+let zxingReady = null, jsQRReady = null;
+function loadScript(src) {
+  return new Promise((ok, fail) => { const sc = document.createElement("script"); sc.src = src; sc.onload = ok; sc.onerror = fail; document.head.appendChild(sc); });
+}
+function loadZXing() {
+  return zxingReady ||= loadScript("https://cdn.jsdelivr.net/npm/zxing-wasm@3.0.3/dist/iife/reader/index.js")
+    .then(() => window.ZXingWASM).catch(e => { zxingReady = null; throw e; });
+}
 function loadJsQR() {
-  return jsQRReady ||= new Promise((ok, fail) => {
-    const sc = document.createElement("script");
-    sc.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
-    sc.onload = () => ok(window.jsQR); sc.onerror = () => { jsQRReady = null; fail(new Error("rede")); };
-    document.head.appendChild(sc);
-  });
+  return jsQRReady ||= loadScript("https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js")
+    .then(() => window.jsQR).catch(e => { jsQRReady = null; throw e; });
+}
+const QR_OPTIONS = { formats: ["QRCode"], tryHarder: true, tryRotate: true, tryInvert: false, maxNumberOfSymbols: 1 };
+
+/** Text of the first QR in an ImageData, or null. */
+async function decodeImageData(data) {
+  try {
+    const zx = await loadZXing();
+    const res = await zx.readBarcodes(data, QR_OPTIONS);
+    const hit = res.find(r => r.isValid && r.text);
+    if (hit) return hit.text;
+  } catch {
+    const jsQR = await loadJsQR();
+    const found = jsQR(data.data, data.width, data.height, { inversionAttempts: "dontInvert" });
+    if (found?.data) return found.data;
+  }
+  return null;
 }
 
-/** Finds the QR in a photo, trying a few sizes (small QR in a big photo decodes better scaled). */
+/** Draws [src] (video or image), optionally cropped to the centre square, at most [max] px. */
+function frameData(src, w, h, crop, max) {
+  const side = crop ? Math.min(w, h) * 0.8 : null;
+  const sx = crop ? (w - side) / 2 : 0, sy = crop ? (h - side) / 2 : 0, sw = crop ? side : w, sh = crop ? side : h;
+  const scale = Math.min(1, max / Math.max(sw, sh));
+  const c = document.createElement("canvas");
+  c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return ctx.getImageData(0, 0, c.width, c.height);
+}
+
+/** Finds the QR in a still photo: whole picture first, then the centre at a few sizes. */
 async function readQrPhoto(file) {
-  const jsQR = await loadJsQR();
   const img = await new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = URL.createObjectURL(file); });
   try {
-    for (const max of [1600, 1100, 2400, 800]) {
-      const scale = Math.min(1, max / Math.max(img.width, img.height));
-      const c = document.createElement("canvas");
-      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
-      const ctx = c.getContext("2d", { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, c.width, c.height);
-      const found = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: "attemptBoth" });
-      if (found?.data) return found.data;
+    for (const [crop, max] of [[false, 2000], [true, 1400], [true, 900], [false, 1200]]) {
+      const text = await decodeImageData(frameData(img, img.naturalWidth, img.naturalHeight, crop, max));
+      if (text) return text;
     }
     return null;
   } finally { URL.revokeObjectURL(img.src); }
+}
+
+/** Live camera inside the page: tries ~5 times a second until a cupom QR is read. */
+async function openCupomScanner() {
+  const box = document.createElement("div");
+  box.className = "scanner";
+  box.innerHTML = `<video playsinline muted autoplay></video>
+    <div class="mask"><div class="frame"></div></div>
+    <div class="msg">Preparando a câmera…</div>
+    <div class="bar"><button data-close>Cancelar</button><button data-torch hidden>Lanterna</button>
+      <label>Usar uma foto<input type="file" accept="image/*" data-photo></label></div>`;
+  document.body.appendChild(box);
+  const video = box.querySelector("video"), msg = box.querySelector(".msg");
+  let stream = null, stop = false, torch = false;
+  const close = () => { stop = true; stream?.getTracks().forEach(t => t.stop()); box.remove(); };
+  const done = text => {
+    if (requestReceipt(text)) { close(); return true; }
+    msg.textContent = "Esse QR code não é de um cupom fiscal. Aponte para o QR do rodapé do cupom.";
+    return false;
+  };
+  box.querySelector("[data-close]").onclick = close;
+  box.querySelector("[data-photo]").onchange = async e => {
+    const f = e.target.files?.[0]; if (!f) return;
+    msg.textContent = "Procurando o QR code na foto…";
+    const text = await readQrPhoto(f).catch(() => null);
+    if (!text) msg.textContent = "Não achei o QR code nesta foto. Tente de novo mais perto e com luz.";
+    else done(text);
+  };
+  loadZXing().catch(() => loadJsQR());
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, advanced: [{ focusMode: "continuous" }] },
+    });
+  } catch {
+    msg.textContent = "A câmera não abriu. Permita a câmera para este site, ou use uma foto.";
+    return;
+  }
+  if (stop) return stream.getTracks().forEach(t => t.stop());
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  const track = stream.getVideoTracks()[0];
+  if (track.getCapabilities?.().torch) {
+    const b = box.querySelector("[data-torch]"); b.hidden = false;
+    b.onclick = () => { torch = !torch; track.applyConstraints({ advanced: [{ torch }] }).catch(() => {}); b.textContent = torch ? "Apagar luz" : "Lanterna"; };
+  }
+  msg.textContent = "Aproxime o QR code do cupom até ele preencher o quadrado";
+  let n = 0;
+  while (!stop) {
+    if (video.videoWidth) {
+      // Alternate: the guide square at full detail, and the whole frame in case the QR is elsewhere.
+      const crop = n++ % 3 !== 2;
+      const text = await decodeImageData(frameData(video, video.videoWidth, video.videoHeight, crop, crop ? 1000 : 1280)).catch(() => null);
+      if (text && done(text)) return;
+    }
+    await new Promise(r => setTimeout(r, 180));
+  }
 }
 
 function render() {
@@ -478,6 +573,7 @@ function saveRecipe() {
 document.addEventListener("click", e => {
   const tab = e.target.closest("[data-tab]");
   if (tab) { S.tab = tab.dataset.tab; S.view = null; store.set("tab", S.tab); render(); return; }
+  if (e.target.closest("[data-scan-cupom]")) { cupomMessage(""); openCupomScanner(); return; }
   if (e.target.closest("[data-new-recipe]")) return openRecipes({ mode: "edit", id: null });
   if (e.target.closest("[data-change-name]")) { store.set("nome", ""); render(); document.getElementById("whoName")?.focus(); return; }
   if (e.target.closest("[data-remove-photo]")) return keepForm(() => { S.photo = null; });
@@ -536,18 +632,6 @@ document.addEventListener("submit", e => {
   }
 });
 document.addEventListener("change", async e => {
-  if (e.target.id === "cupomFoto" && e.target.files?.[0]) {
-    cupomMessage("Procurando o QR code na foto…");
-    try {
-      const text = await readQrPhoto(e.target.files[0]);
-      if (!text) cupomMessage("Não achei o QR code nesta foto. Tente de novo mais perto, com luz e sem tremer.");
-      else if (!requestReceipt(text)) cupomMessage("Esse QR code não é de um cupom fiscal.");
-    } catch {
-      cupomMessage("Não foi possível ler a foto. Verifique a internet e tente de novo.");
-    }
-    e.target.value = "";
-    return;
-  }
   if (e.target.id !== "rPhoto" || !e.target.files?.[0]) return;
   try {
     const data = await shrinkPhoto(e.target.files[0]);
