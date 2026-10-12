@@ -116,6 +116,12 @@ nav .seg.recipes .pill{transform:translateX(calc(200% + 16px))}
 .scanner .bar button,.scanner .bar label{flex:1;border:0;border-radius:16px;padding:15px;font-weight:500;cursor:pointer;text-align:center;background:rgba(255,255,255,.14);color:#fff;backdrop-filter:blur(6px)}
 .scanner .bar input{display:none}
 .cupom .scan{border:0;font:inherit}
+.dinner{padding:16px}
+.dinner .btns{display:flex;gap:10px}
+.dinner .btns button{flex:1;border:1px solid var(--line);background:none;border-radius:16px;padding:14px;color:var(--fg);font:inherit;cursor:pointer;transition:background .25s,color .25s}
+.dinner .btns button.yes{background:var(--mint);border-color:var(--mint);color:var(--mint-ink);font-weight:500}
+.dinner .btns button.no{background:var(--card2);color:var(--mute)}
+.dinner p{margin:12px 2px 0;color:var(--mute);font-size:14px}
 .who{background:var(--card);border-radius:22px;padding:18px;margin-bottom:18px;animation:in .45s var(--ease)}
 .who b{display:block;font-weight:500;font-size:19px;margin-bottom:4px}
 .who p{margin:0 0 14px;color:var(--mute);font-size:14px}
@@ -169,7 +175,7 @@ addEventListener("hashchange", () => {
 
 const S = {
   tab: store.get("tab", "list"),
-  rows: Object.assign({ shopping_items: {}, notes: {}, reminders: {}, recipes: {}, receipts: {} }, store.get("rows", {})),  // by id, tombstones included
+  rows: Object.assign({ shopping_items: {}, notes: {}, reminders: {}, recipes: {}, receipts: {}, dinners: {} }, store.get("rows", {})),  // by id, tombstones included
   view: null,  // recipes tab: null (list) | { mode: "view" | "edit", id }
   outbox: store.get("outbox", {}),
   cursor: store.get("cursor", "1970-01-01T00:00:00Z"),
@@ -204,7 +210,7 @@ async function sync() {
     const sent = { ...S.outbox };
     const keys = Object.keys(sent);
     if (keys.length) {
-      const p_rows = { shopping_items: [], notes: [], reminders: [], recipes: [], receipts: [] };
+      const p_rows = { shopping_items: [], notes: [], reminders: [], recipes: [], receipts: [], dinners: [] };
       keys.forEach(k => p_rows[sent[k].table].push(sent[k].row));
       await rpc("kitchen_push", { p_code: CODE, p_rows, p_create: false });
       keys.forEach(k => { if (S.outbox[k] === sent[k]) delete S.outbox[k]; });
@@ -212,7 +218,7 @@ async function sync() {
     const since = new Date(new Date(S.cursor).getTime() - 10000).toISOString();
     const r = await rpc("kitchen_pull", { p_code: CODE, p_since: since });
     let changed = false;
-    for (const table of ["shopping_items", "notes", "reminders", "recipes", "receipts"]) {
+    for (const table of ["shopping_items", "notes", "reminders", "recipes", "receipts", "dinners"]) {
       for (const row of r[table] || []) {
         const local = S.rows[table][row.id];
         const pending = S.outbox[table + "/" + row.id];
@@ -231,6 +237,42 @@ async function sync() {
 
 const live = table => Object.values(S.rows[table]).filter(r => !r.deleted);
 const check = '<span class="ck"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>';
+
+// ---------- Quem janta hoje ----------
+// One answer per person per day; the panel counts them and sets the recipes' portions.
+
+const today = () => new Date().toLocaleDateString("sv-SE");  // YYYY-MM-DD in the phone's time zone
+
+function dinnerToday() {
+  const day = today(), latest = {};
+  for (const r of live("dinners")) {
+    if (r.day !== day || !r.person) continue;
+    const k = r.person.toLowerCase();
+    if (!latest[k] || new Date(r.updated_at) > new Date(latest[k].updated_at)) latest[k] = r;
+  }
+  return latest;
+}
+
+function dinnerCard() {
+  const me = store.get("nome", "");
+  if (!me) return "";
+  const all = dinnerToday(), mine = all[me.toLowerCase()];
+  const others = Object.values(all).filter(r => r.person.toLowerCase() !== me.toLowerCase())
+    .sort((a, b) => a.person.localeCompare(b.person, "pt-BR"));
+  const n = Object.values(all).filter(r => r.coming).length;
+  return `<div class="label">Jantar de hoje</div><div class="card dinner">
+    <div class="btns"><button data-dinner="1" class="${mine?.coming === true ? "yes" : ""}">Vou jantar</button>
+      <button data-dinner="0" class="${mine?.coming === false ? "no" : ""}">Não vou</button></div>
+    <p>${n ? `${n} ${n === 1 ? "pessoa vai" : "pessoas vão"} jantar` : "Ninguém confirmou ainda"}${others.length
+      ? " · " + others.map(r => `${esc(r.person)} ${r.coming ? "vai" : "não vai"}`).join(", ") : ""}</p></div>`;
+}
+
+function answerDinner(coming) {
+  const me = store.get("nome", "");
+  if (!me) return;
+  const mine = dinnerToday()[me.toLowerCase()];
+  change("dinners", mine ? { ...mine, coming } : { id: uuid(), day: today(), person: me, coming, deleted: false });
+}
 
 // ---------- Cupom fiscal ----------
 // The phone's camera focuses on the small QR; the panel then queries SEFAZ-PB (browsers can't).
@@ -420,7 +462,7 @@ function render() {
   } else {
     const rem = live("reminders");
     const notes = live("notes").sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-    main.innerHTML = askName + `
+    main.innerHTML = askName + dinnerCard() + `
       ${rem.length ? `<div class="label">Lembretes</div><div class="card">${rem.map(r =>
         `<div class="row ${r.done ? "done" : ""}" data-rem="${r.id}">${check}<span class="tx">${esc(r.body)}</span><span class="meta">${esc(r.at_label)}</span></div>`).join("")}</div>` : ""}
       <div class="label">Recados da família</div>
@@ -575,6 +617,8 @@ document.addEventListener("click", e => {
   if (tab) { S.tab = tab.dataset.tab; S.view = null; store.set("tab", S.tab); render(); return; }
   if (e.target.closest("[data-scan-cupom]")) { cupomMessage(""); openCupomScanner(); return; }
   if (e.target.closest("[data-new-recipe]")) return openRecipes({ mode: "edit", id: null });
+  const dn = e.target.closest("[data-dinner]");
+  if (dn) { answerDinner(dn.dataset.dinner === "1"); return; }
   if (e.target.closest("[data-change-name]")) { store.set("nome", ""); render(); document.getElementById("whoName")?.focus(); return; }
   if (e.target.closest("[data-remove-photo]")) return keepForm(() => { S.photo = null; });
   const retryCupom = e.target.closest("[data-retry-cupom]");
