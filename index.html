@@ -122,6 +122,13 @@ nav .seg.recipes .pill{transform:translateX(calc(200% + 16px))}
 .dinner .btns button.yes{background:var(--mint);border-color:var(--mint);color:var(--mint-ink);font-weight:500}
 .dinner .btns button.no{background:var(--card2);color:var(--mute)}
 .dinner p{margin:12px 2px 0;color:var(--mute);font-size:14px}
+.photos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.photos .ph{position:relative;aspect-ratio:1;border-radius:14px;overflow:hidden;background:var(--card2)}
+.photos img{width:100%;height:100%;object-fit:cover;display:block}
+.photos .ph button{position:absolute;top:6px;right:6px;width:28px;height:28px;border:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:16px;line-height:1;cursor:pointer}
+.photos .ph small{position:absolute;left:8px;bottom:6px;font-size:11px;color:#fff;text-shadow:0 1px 3px #000}
+.photo-add{display:block;text-align:center;border:1px dashed var(--line);border-radius:16px;padding:14px;margin-top:10px;color:var(--mint);cursor:pointer}
+.photo-add input{display:none}
 .who{background:var(--card);border-radius:22px;padding:18px;margin-bottom:18px;animation:in .45s var(--ease)}
 .who b{display:block;font-weight:500;font-size:19px;margin-bottom:4px}
 .who p{margin:0 0 14px;color:var(--mute);font-size:14px}
@@ -175,7 +182,7 @@ addEventListener("hashchange", () => {
 
 const S = {
   tab: store.get("tab", "list"),
-  rows: Object.assign({ shopping_items: {}, notes: {}, reminders: {}, recipes: {}, receipts: {}, dinners: {} }, store.get("rows", {})),  // by id, tombstones included
+  rows: Object.assign({ shopping_items: {}, notes: {}, reminders: {}, recipes: {}, receipts: {}, dinners: {}, photos: {} }, store.get("rows", {})),  // by id, tombstones included
   view: null,  // recipes tab: null (list) | { mode: "view" | "edit", id }
   outbox: store.get("outbox", {}),
   cursor: store.get("cursor", "1970-01-01T00:00:00Z"),
@@ -210,7 +217,7 @@ async function sync() {
     const sent = { ...S.outbox };
     const keys = Object.keys(sent);
     if (keys.length) {
-      const p_rows = { shopping_items: [], notes: [], reminders: [], recipes: [], receipts: [], dinners: [] };
+      const p_rows = { shopping_items: [], notes: [], reminders: [], recipes: [], receipts: [], dinners: [], photos: [] };
       keys.forEach(k => p_rows[sent[k].table].push(sent[k].row));
       await rpc("kitchen_push", { p_code: CODE, p_rows, p_create: false });
       keys.forEach(k => { if (S.outbox[k] === sent[k]) delete S.outbox[k]; });
@@ -218,11 +225,13 @@ async function sync() {
     const since = new Date(new Date(S.cursor).getTime() - 10000).toISOString();
     const r = await rpc("kitchen_pull", { p_code: CODE, p_since: since });
     let changed = false;
-    for (const table of ["shopping_items", "notes", "reminders", "recipes", "receipts", "dinners"]) {
+    for (const table of ["shopping_items", "notes", "reminders", "recipes", "receipts", "dinners", "photos"]) {
       for (const row of r[table] || []) {
         const local = S.rows[table][row.id];
         const pending = S.outbox[table + "/" + row.id];
         if (pending && new Date(pending.row.updated_at) >= new Date(row.updated_at)) continue;
+        // Photos: the phone keeps only the thumbnail (the big one would fill the browser's storage).
+        if (table === "photos") delete row.image;
         if (!local || new Date(row.updated_at) > new Date(local.updated_at)) { S.rows[table][row.id] = row; changed = true; }
       }
     }
@@ -272,6 +281,38 @@ function answerDinner(coming) {
   if (!me) return;
   const mine = dinnerToday()[me.toLowerCase()];
   change("dinners", mine ? { ...mine, coming } : { id: uuid(), day: today(), person: me, coming, deleted: false });
+}
+
+// ---------- Fotos no painel ----------
+// They pass slowly in the panel's ambient mode. The panel gets the 1280 px photo; phones keep
+// only a small thumbnail.
+
+function photosSection() {
+  const list = live("photos").sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  return `<div class="label">Fotos no painel</div>
+    ${list.length ? `<div class="photos">${list.map(p => `<div class="ph">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : ""}
+      <button data-del-photo="${p.id}" aria-label="Apagar foto">×</button>${p.author ? `<small>${esc(p.author)}</small>` : ""}</div>`).join("")}</div>`
+      : `<div class="empty">As fotos enviadas aqui passam no painel quando ele está em descanso.</div>`}
+    <label class="photo-add" id="photoAddLabel">Enviar fotos<input type="file" accept="image/*" multiple id="familyPhotos"></label>
+    <div class="err-text" id="familyPhotoErr"></div>`;
+}
+
+async function addFamilyPhotos(files) {
+  const err = document.getElementById("familyPhotoErr"), label = document.getElementById("photoAddLabel");
+  let sent = 0;
+  for (const f of files) {
+    if (label) label.firstChild.textContent = `Preparando ${sent + 1} de ${files.length}…`;
+    try {
+      const image = await shrinkPhoto(f, 1280, 700000, 0.82);
+      const thumb = await shrinkPhoto(f, 240, 50000, 0.7);
+      const row = { id: uuid(), image, thumb, caption: "", author: store.get("nome", ""), deleted: false, updated_at: new Date().toISOString() };
+      S.outbox["photos/" + row.id] = { table: "photos", row };
+      const { image: _, ...small } = row;
+      S.rows.photos[row.id] = small;
+      sent++;
+    } catch { if (err) err.textContent = "Não foi possível abrir uma das fotos."; }
+  }
+  save(); render(); sync();
 }
 
 // ---------- Cupom fiscal ----------
@@ -469,7 +510,8 @@ function render() {
       ${store.get("nome", "") ? `<div class="writer">Escrevendo como ${esc(store.get("nome", ""))} · <button type="button" data-change-name>trocar</button></div>` : ""}
       <form class="add" id="addNote" novalidate><input id="noteText" placeholder="Saí para o mercado, volto às 18h" autocomplete="off" aria-label="Novo recado"><button aria-label="Publicar recado">+</button></form>
       <div class="err-text" id="noteErr"></div>
-      <div class="notes">${notes.map(n => `<div class="note" style="background:#${(n.color & 0xFFFFFF).toString(16).padStart(6, "0")};--r:${n.tilt}deg">${esc(n.body)}<small>${esc(n.author)}</small></div>`).join("")}</div>`;
+      <div class="notes">${notes.map(n => `<div class="note" style="background:#${(n.color & 0xFFFFFF).toString(16).padStart(6, "0")};--r:${n.tilt}deg">${esc(n.body)}<small>${esc(n.author)}</small></div>`).join("")}</div>
+      ${photosSection()}`;
   }
 }
 
@@ -541,19 +583,19 @@ function formPhoto() {
   return S.view?.id ? S.rows.recipes[S.view.id]?.image || null : null;
 }
 
-/** Shrinks a photo to 800 px on the phone (~60-100 KB) before it is stored with the recipe. */
-function shrinkPhoto(file) {
+/** Shrinks a photo on the phone (recipes: 800 px, ~60-100 KB) before it is stored. */
+function shrinkPhoto(file, max = 800, limit = 550000, q0 = 0.78) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
       const c = document.createElement("canvas");
       c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(img.src);
-      let q = 0.78, out = c.toDataURL("image/jpeg", q);
-      while (out.length > 550000 && q > 0.4) { q -= 0.12; out = c.toDataURL("image/jpeg", q); }
-      out.length > 550000 ? reject(new Error("grande")) : resolve(out);
+      let q = q0, out = c.toDataURL("image/jpeg", q);
+      while (out.length > limit && q > 0.3) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+      out.length > limit ? reject(new Error("grande")) : resolve(out);
     };
     img.onerror = () => reject(new Error("formato"));
     img.src = URL.createObjectURL(file);
@@ -617,6 +659,12 @@ document.addEventListener("click", e => {
   if (tab) { S.tab = tab.dataset.tab; S.view = null; store.set("tab", S.tab); render(); return; }
   if (e.target.closest("[data-scan-cupom]")) { cupomMessage(""); openCupomScanner(); return; }
   if (e.target.closest("[data-new-recipe]")) return openRecipes({ mode: "edit", id: null });
+  const dp = e.target.closest("[data-del-photo]");
+  if (dp) {
+    const p = S.rows.photos[dp.dataset.delPhoto];
+    if (p && confirm("Apagar esta foto do painel?")) change("photos", { ...p, thumb: null, deleted: true });
+    return;
+  }
   const dn = e.target.closest("[data-dinner]");
   if (dn) { answerDinner(dn.dataset.dinner === "1"); return; }
   if (e.target.closest("[data-change-name]")) { store.set("nome", ""); render(); document.getElementById("whoName")?.focus(); return; }
@@ -676,6 +724,7 @@ document.addEventListener("submit", e => {
   }
 });
 document.addEventListener("change", async e => {
+  if (e.target.id === "familyPhotos" && e.target.files?.length) return addFamilyPhotos([...e.target.files]);
   if (e.target.id !== "rPhoto" || !e.target.files?.[0]) return;
   try {
     const data = await shrinkPhoto(e.target.files[0]);
