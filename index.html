@@ -94,6 +94,17 @@ nav .seg.recipes .pill{transform:translateX(calc(200% + 16px))}
 .source{display:inline-block;color:var(--mint);font-size:14px;margin:-8px 0 18px;text-decoration:none}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--mint);border-right-color:transparent;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-1px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
+.cupom{background:var(--card);border-radius:22px;padding:16px;margin-top:22px;animation:in .45s var(--ease)}
+.cupom .head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
+.cupom .head b{font-weight:500}
+.cupom .month{color:var(--mint);font-size:15px}
+.cupom input[type=file]{display:none}
+.cupom .scan{display:block;width:100%;text-align:center;border-radius:16px;padding:14px;background:var(--mint);color:var(--mint-ink);font-weight:500;cursor:pointer}
+.cupom .or{font-size:13px;color:var(--dim);margin:12px 2px 8px}
+.rec{display:flex;justify-content:space-between;gap:10px;padding:10px 2px;border-top:1px solid var(--line);font-size:15px}
+.rec span{color:var(--mute)}
+.rec.fail span{color:var(--alert)}
+.rec button{border:0;background:none;color:var(--mint);cursor:pointer;padding:0;font-size:14px}
 .who{background:var(--card);border-radius:22px;padding:18px;margin-bottom:18px;animation:in .45s var(--ease)}
 .who b{display:block;font-weight:500;font-size:19px;margin-bottom:4px}
 .who p{margin:0 0 14px;color:var(--mute);font-size:14px}
@@ -147,7 +158,7 @@ addEventListener("hashchange", () => {
 
 const S = {
   tab: store.get("tab", "list"),
-  rows: Object.assign({ shopping_items: {}, notes: {}, reminders: {}, recipes: {} }, store.get("rows", {})),  // by id, tombstones included
+  rows: Object.assign({ shopping_items: {}, notes: {}, reminders: {}, recipes: {}, receipts: {} }, store.get("rows", {})),  // by id, tombstones included
   view: null,  // recipes tab: null (list) | { mode: "view" | "edit", id }
   outbox: store.get("outbox", {}),
   cursor: store.get("cursor", "1970-01-01T00:00:00Z"),
@@ -182,7 +193,7 @@ async function sync() {
     const sent = { ...S.outbox };
     const keys = Object.keys(sent);
     if (keys.length) {
-      const p_rows = { shopping_items: [], notes: [], reminders: [], recipes: [] };
+      const p_rows = { shopping_items: [], notes: [], reminders: [], recipes: [], receipts: [] };
       keys.forEach(k => p_rows[sent[k].table].push(sent[k].row));
       await rpc("kitchen_push", { p_code: CODE, p_rows, p_create: false });
       keys.forEach(k => { if (S.outbox[k] === sent[k]) delete S.outbox[k]; });
@@ -190,7 +201,7 @@ async function sync() {
     const since = new Date(new Date(S.cursor).getTime() - 10000).toISOString();
     const r = await rpc("kitchen_pull", { p_code: CODE, p_since: since });
     let changed = false;
-    for (const table of ["shopping_items", "notes", "reminders", "recipes"]) {
+    for (const table of ["shopping_items", "notes", "reminders", "recipes", "receipts"]) {
       for (const row of r[table] || []) {
         const local = S.rows[table][row.id];
         const pending = S.outbox[table + "/" + row.id];
@@ -209,6 +220,78 @@ async function sync() {
 
 const live = table => Object.values(S.rows[table]).filter(r => !r.deleted);
 const check = '<span class="ck"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>';
+
+// ---------- Cupom fiscal ----------
+// The phone's camera focuses on the small QR; the panel then queries SEFAZ-PB (browsers can't).
+
+const brl = v => Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const nfceKey = s => { try { s = decodeURIComponent(s); } catch {} const m = String(s).replace(/[\s.\-]/g, "").match(/\d{44}/); return m ? m[0] : null; };
+const isNfce = s => /sefaz|nfce|fazenda/i.test(s) && !!nfceKey(s);
+
+function cupomCard() {
+  const all = Object.values(S.rows.receipts || {}).filter(r => !r.deleted);
+  const now = new Date();
+  const month = all.filter(r => r.import_status !== "pending" && r.import_status !== "failed" && r.purchased_at &&
+    new Date(r.purchased_at).getMonth() === now.getMonth() && new Date(r.purchased_at).getFullYear() === now.getFullYear());
+  const recent = all.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 4);
+  const monthName = now.toLocaleDateString("pt-BR", { month: "long" });
+  return `<div class="cupom">
+    <div class="head"><b>Cupom fiscal</b>${month.length ? `<span class="month">${monthName}: ${brl(month.reduce((t, r) => t + Number(r.total || 0), 0))}</span>` : ""}</div>
+    <label class="scan">Ler cupom fiscal<input type="file" id="cupomFoto" accept="image/*" capture="environment"></label>
+    <div class="or">Fotografe o QR code do rodapé do cupom. Ou cole o link que a câmera do celular abriu:</div>
+    <form class="add" id="cupomLink" novalidate><input id="cupomUrl" type="url" inputmode="url" placeholder="https://www.sefaz.pb.gov.br/nfce?p=…" autocomplete="off" aria-label="Link do cupom"><button aria-label="Enviar cupom">↓</button></form>
+    <div class="err-text" id="cupomErr"></div>
+    ${recent.map(r => r.import_status === "pending"
+      ? `<div class="rec"><b><span class="spin"></span>Cupom enviado</b><span>o painel está consultando a SEFAZ…</span></div>`
+      : r.import_status === "failed"
+        ? `<div class="rec fail"><b>Não deu para ler</b><span>${esc(r.import_error || "")}</span><button data-retry-cupom="${r.id}">Tentar de novo</button></div>`
+        : `<div class="rec"><b>${esc(r.store)}</b><span>${new Date(r.purchased_at).toLocaleDateString("pt-BR")} · ${brl(r.total)}</span></div>`).join("")}
+  </div>`;
+}
+
+/** Queues a note for the panel to read. Returns false when the text is not a cupom link. */
+function requestReceipt(raw) {
+  const text = String(raw || "").trim();
+  if (!isNfce(text)) return false;
+  const key = nfceKey(text);
+  const known = Object.values(S.rows.receipts || {}).find(r => !r.deleted && r.access_key === key && r.import_status !== "failed");
+  if (known) { cupomMessage(known.import_status === "pending" ? "Esse cupom já está sendo lido pelo painel." : "Esse cupom já foi registrado."); return true; }
+  const url = (text.match(/https?:\/\/\S+/) || [text])[0];
+  change("receipts", { id: uuid(), access_key: key, qr: url, import_status: "pending", import_error: null,
+    store: "", store_legal_name: "", purchased_at: null, total: 0, discount: 0, items: [], deleted: false });
+  S.tab = "list"; store.set("tab", "list"); render();
+  return true;
+}
+
+function cupomMessage(msg) { const e = document.getElementById("cupomErr"); if (e) e.textContent = msg; }
+
+let jsQRReady = null;
+function loadJsQR() {
+  return jsQRReady ||= new Promise((ok, fail) => {
+    const sc = document.createElement("script");
+    sc.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+    sc.onload = () => ok(window.jsQR); sc.onerror = () => { jsQRReady = null; fail(new Error("rede")); };
+    document.head.appendChild(sc);
+  });
+}
+
+/** Finds the QR in a photo, trying a few sizes (small QR in a big photo decodes better scaled). */
+async function readQrPhoto(file) {
+  const jsQR = await loadJsQR();
+  const img = await new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = URL.createObjectURL(file); });
+  try {
+    for (const max of [1600, 1100, 2400, 800]) {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      const found = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: "attemptBoth" });
+      if (found?.data) return found.data;
+    }
+    return null;
+  } finally { URL.revokeObjectURL(img.src); }
+}
 
 function render() {
   const main = document.getElementById("main");
@@ -235,7 +318,8 @@ function render() {
         return list.length ? `<div class="cat">${c}</div><div class="card">${list.map(i =>
           `<div class="row ${i.done ? "done" : ""}" data-item="${i.id}">${check}<span class="tx">${esc(i.name)}</span></div>`).join("")}</div>` : "";
       }).join("") : `<div class="empty">A lista está vazia. Adicione o primeiro item acima.</div>`}
-      ${done ? `<button class="ghost" id="clear">Limpar comprados (${done})</button>` : ""}`;
+      ${done ? `<button class="ghost" id="clear">Limpar comprados (${done})</button>` : ""}
+      ${cupomCard()}`;
   } else if (S.tab === "recipes") {
     main.innerHTML = (S.view ? "" : askName) + renderRecipes();
   } else {
@@ -360,6 +444,7 @@ function recipeMeta(r) {
 
 /** A link pasted or shared from another app; the panel does the fetching (browsers block it here). */
 function requestImport(raw) {
+  if (requestReceipt(raw)) return true;
   const m = String(raw || "").match(/https?:\/\/[^\s"'<>]+/);
   if (!m) return false;
   const url = m[0].replace(/[).,;]+$/, "");
@@ -396,6 +481,8 @@ document.addEventListener("click", e => {
   if (e.target.closest("[data-new-recipe]")) return openRecipes({ mode: "edit", id: null });
   if (e.target.closest("[data-change-name]")) { store.set("nome", ""); render(); document.getElementById("whoName")?.focus(); return; }
   if (e.target.closest("[data-remove-photo]")) return keepForm(() => { S.photo = null; });
+  const retryCupom = e.target.closest("[data-retry-cupom]");
+  if (retryCupom) { const r = S.rows.receipts[retryCupom.dataset.retryCupom]; change("receipts", { ...r, import_status: "pending", import_error: null }); return; }
   const retry = e.target.closest("[data-retry-import]");
   if (retry) { const r = S.rows.recipes[retry.dataset.retryImport]; change("recipes", { ...r, import_status: "pending", import_error: null }); return openRecipes({ mode: "view", id: r.id }); }
   if (e.target.closest("[data-recipes-back]")) return openRecipes(S.view?.mode === "edit" && S.view.id ? { mode: "view", id: S.view.id } : null);
@@ -423,6 +510,11 @@ document.addEventListener("submit", e => {
     if (!name) { input.classList.add("err"); return; }
     store.set("nome", name.charAt(0).toUpperCase() + name.slice(1).slice(0, 29)); render(); return;
   }
+  if (e.target.id === "cupomLink") {
+    const input = document.getElementById("cupomUrl");
+    if (!requestReceipt(input.value)) { input.classList.add("err"); cupomMessage("Cole o link do QR code do cupom (sefaz.pb.gov.br/nfce…)"); }
+    return;
+  }
   if (e.target.id === "importForm") {
     const input = document.getElementById("importUrl");
     if (!requestImport(input.value)) { input.classList.add("err"); document.getElementById("importErr").textContent = "Cole um link que comece com https://"; }
@@ -444,6 +536,18 @@ document.addEventListener("submit", e => {
   }
 });
 document.addEventListener("change", async e => {
+  if (e.target.id === "cupomFoto" && e.target.files?.[0]) {
+    cupomMessage("Procurando o QR code na foto…");
+    try {
+      const text = await readQrPhoto(e.target.files[0]);
+      if (!text) cupomMessage("Não achei o QR code nesta foto. Tente de novo mais perto, com luz e sem tremer.");
+      else if (!requestReceipt(text)) cupomMessage("Esse QR code não é de um cupom fiscal.");
+    } catch {
+      cupomMessage("Não foi possível ler a foto. Verifique a internet e tente de novo.");
+    }
+    e.target.value = "";
+    return;
+  }
   if (e.target.id !== "rPhoto" || !e.target.files?.[0]) return;
   try {
     const data = await shrinkPhoto(e.target.files[0]);
