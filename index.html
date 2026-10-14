@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#060708">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Cozinha</title>
+<title>Meus Centavos</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -225,11 +225,11 @@ async function sync() {
     if (keys.length) {
       const p_rows = { shopping_items: [], notes: [], reminders: [], recipes: [], receipts: [], dinners: [], photos: [], calls: [] };
       keys.forEach(k => p_rows[sent[k].table].push(sent[k].row));
-      await rpc("kitchen_push", { p_code: CODE, p_rows, p_create: false });
+      await rpc("household_push", { p_code: CODE, p_rows, p_create: false });
       keys.forEach(k => { if (S.outbox[k] === sent[k]) delete S.outbox[k]; });
     }
     const since = new Date(new Date(S.cursor).getTime() - 10000).toISOString();
-    const r = await rpc("kitchen_pull", { p_code: CODE, p_since: since });
+    const r = await rpc("household_pull", { p_code: CODE, p_since: since });
     let changed = false;
     for (const table of ["shopping_items", "notes", "reminders", "recipes", "receipts", "dinners", "photos", "calls"]) {
       for (const row of r[table] || []) {
@@ -289,7 +289,7 @@ function answerDinner(coming) {
   change("dinners", mine ? { ...mine, coming } : { id: uuid(), day: today(), person: me, coming, deleted: false });
 }
 
-// ---------- Chamar a cozinha ----------
+// ---------- Chamar no painel ----------
 // The panel rings, reads the message aloud and answers with one tap ("Ok", "Já vou").
 
 const CALL_PRESETS = ["Estou chegando", "O jantar está pronto?", "Pode desligar o fogo?", "Me chama quando estiver pronto"];
@@ -301,12 +301,12 @@ function callCard() {
   let state = "";
   if (mine && Date.now() - new Date(mine.updated_at) < 3600000) {
     state = mine.reply
-      ? `"${esc(mine.message)}" · a cozinha respondeu: <b>${esc(mine.reply)}</b> (${hhmm(mine.replied_at || mine.updated_at)})`
+      ? `"${esc(mine.message)}" · responderam no painel: <b>${esc(mine.reply)}</b> (${hhmm(mine.replied_at || mine.updated_at)})`
       : `"${esc(mine.message)}" · enviado às ${hhmm(mine.updated_at)}, ${S.outbox["calls/" + mine.id] ? "enviando…" : "esperando resposta"}`;
   }
-  return `<div class="label">Chamar a cozinha</div><div class="card call">
+  return `<div class="label">Chamar no painel</div><div class="card call">
     <div class="chips">${CALL_PRESETS.map(m => `<button data-call="${esc(m)}">${esc(m)}</button>`).join("")}</div>
-    <form class="add" id="callForm" novalidate><input id="callText" maxlength="200" placeholder="Outro recado para a cozinha" autocomplete="off" aria-label="Recado para a cozinha"><button aria-label="Enviar para a cozinha">➜</button></form>
+    <form class="add" id="callForm" novalidate><input id="callText" maxlength="200" placeholder="Outro recado para o painel" autocomplete="off" aria-label="Recado para o painel"><button aria-label="Enviar para o painel">➜</button></form>
     ${state ? `<p class="state">${state}</p>` : ""}</div>`;
 }
 
@@ -512,7 +512,7 @@ function render() {
   if (!SUPABASE_URL || !CODE) {
     main.innerHTML = `<div class="setup">${!SUPABASE_URL
       ? "Esta página ainda não foi ligada a um projeto Supabase."
-      : "Para conectar este celular, abra o <b>Mural</b> no painel da cozinha e aponte a câmera para o <b>QR code</b> do cartão Celulares."}</div>`;
+      : "Para conectar este celular, abra o <b>Mural</b> no painel e aponte a câmera para o <b>QR code</b> do cartão Celulares."}</div>`;
     setStatus("", "Não conectado");
     return;
   }
@@ -559,12 +559,12 @@ function renderRecipes() {
       <div class="err-text" id="importErr"></div>
       <button class="primary" data-new-recipe>Escrever uma receita</button>` + (list.length
       ? list.map(r => `<button class="rcard" data-recipe="${r.id}">${r.image ? `<img class="thumb" src="${esc(r.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}<span class="txt"><b>${esc(r.title)}${statusChip(r)}</b><span>${recipeMeta(r)}</span></span></button>`).join("")
-      : `<div class="empty">Importe receitas de sites como TudoGostoso e Panelinha colando o link, ou escreva as receitas da família. Elas aparecem no painel da cozinha, com o passo a passo e os timers.</div>`);
+      : `<div class="empty">Importe receitas de sites como TudoGostoso e Panelinha colando o link, ou escreva as receitas da família. Elas aparecem no painel, com o passo a passo e os timers.</div>`);
   }
   const r = v.id ? S.rows.recipes[v.id] : null;
   if (v.mode === "view" && r && r.import_status === "pending") {
     return `<button class="back" data-recipes-back>← Receitas</button>
-      <div class="setup"><span class="spin"></span>O painel da cozinha está buscando esta receita. Ela aparece aqui em alguns segundos, desde que o painel esteja ligado.<br><br><span style="overflow-wrap:anywhere">${esc(r.source_url)}</span></div>
+      <div class="setup"><span class="spin"></span>O painel está buscando esta receita. Ela aparece aqui em alguns segundos, desde que o painel esteja ligado.<br><br><span style="overflow-wrap:anywhere">${esc(r.source_url)}</span></div>
       <button class="danger" data-delete-recipe="${r.id}">Cancelar importação</button>`;
   }
   if (v.mode === "view" && r && r.import_status === "failed") {
@@ -781,7 +781,7 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
 
-// Android "Compartilhar → Cozinha" opens ?share&url=…&text=… (see manifest.webmanifest).
+// Android "Compartilhar → Meus Centavos" opens ?share&url=…&text=… (see manifest.webmanifest).
 const shared = new URLSearchParams(location.search);
 if (shared.has("share")) {
   history.replaceState(null, "", location.pathname);
